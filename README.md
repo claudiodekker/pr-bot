@@ -47,23 +47,25 @@ jobs:
       commands: |
         🎨: format && npx eslint --fix .
         ♻️: composer install --no-interaction && vendor/bin/rector process
-        🚀: ./.github/bot/deploy.sh
+        🚀: ./.github/bot/deploy.sh "$ARGS"
 ```
 
-- A trigger can be any text, such as an emoji or `/fix`. The comment has to be exactly the trigger, so a trailing space or a sentence around it doesn't count.
+- A trigger is one word, such as an emoji or `/fix`. A comment runs it when its first word is the trigger, so both `🚀` and `🚀 staging` run 🚀.
+- Everything after the trigger reaches the script as `$ARGS`, or an empty string when there is nothing after it. A comment like `🎨 looks good` runs 🎨 too, with `looks good` as its arguments.
 - The script runs in Bash from the root of the pull request's branch. It stops at the first failing command.
 - `format` is the built-in 🎨, so a line for 🎨 can extend it rather than replace it.
-- Anything longer than one line belongs in a script in your repo, like `./.github/bot/deploy.sh` above.
+- Anything longer than one line belongs in a script in your repo, like `./.github/bot/deploy.sh` above, which deploys to the environment named in the comment (`🚀 staging`).
 - A command that changes no files commits nothing, so commands that only report or deploy work too.
 
 ### What a script can use
 
-| Variable   | Value                                |
-| ---------- | ------------------------------------ |
-| `ACTOR`    | The login of the commenter.          |
-| `COMMAND`  | The trigger that was commented.      |
-| `GH_TOKEN` | The workflow's token, so `gh` works. |
-| `PR`       | The pull request's number.           |
+| Variable   | Value                                 |
+| ---------- | ------------------------------------- |
+| `ACTOR`    | The login of the commenter.           |
+| `ARGS`     | The text after the trigger, or empty. |
+| `COMMAND`  | The trigger that was commented.       |
+| `GH_TOKEN` | The workflow's token, so `gh` works.  |
+| `PR`       | The pull request's number.            |
 
 Use them to decide who may run a command, or to reply in your own words:
 
@@ -71,13 +73,15 @@ Use them to decide who may run a command, or to reply in your own words:
 #!/usr/bin/env bash
 set -euo pipefail
 
+environment="${1:-staging}"
+
 if [ "$ACTOR" != "claudiodekker" ]; then
   gh pr comment "$PR" --body "Only @claudiodekker can deploy this pull request."
   exit 0
 fi
 
-./deploy.sh staging
-gh pr comment "$PR" --body "Deployed to staging."
+./deploy.sh "$environment"
+gh pr comment "$PR" --body "Deployed to $environment."
 ```
 
 For full deployments with environments and locks, [github/branch-deploy](https://github.com/github/branch-deploy) is the better fit.
@@ -96,12 +100,14 @@ Only people with write or admin access to the repo can run commands. pr-bot igno
 
 pr-bot uses [github/command](https://github.com/github/command) for these checks and for the reactions.
 
+A command with arguments only starts for commenters GitHub marks as an owner, member or collaborator of the repo. An organization member who keeps their membership private may show as neither, and then only commands without arguments work for them.
+
 ## Things to know
 
 - **The checks wait for a click after pr-bot pushes.** GitHub doesn't start workflows automatically from a push made with the workflow's own token, so the pull request shows **Approve workflows to run** instead. One click starts them.
 - **pr-bot never changes workflow files.** The workflow's token isn't allowed to push them, so pr-bot drops any change a command makes under `.github/workflows` before it commits.
-- **A comment costs nothing unless it could be a command.** GitHub only starts a machine when the comment appears in your list of commands.
-- **One command runs at a time per pull request.** Commenting the same trigger again waits for the run before it.
+- **Comments from people with write access start a short run.** GitHub can't split a trigger from its arguments before it starts a machine, so every pull request comment from someone with write access starts a run, which stops within seconds unless the first word is a trigger. That's free on public repos. On private repos, GitHub bills each run as at least a minute. Other comments cost nothing unless they're exactly a trigger.
+- **The same comment runs once at a time per pull request.** Commenting the same command again waits for the run before it.
 
 ## License
 

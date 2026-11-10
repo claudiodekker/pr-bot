@@ -18,12 +18,17 @@ on:
 
 jobs:
   run:
-    # GitHub evaluates this before starting a machine. Only a comment that appears
-    # in the command list gets one, and the first step matches it exactly.
+    # GitHub evaluates this before starting a machine. A comment that is exactly a
+    # trigger gets one, and so does any comment from someone with write access,
+    # because expressions can't split a trigger from its arguments. The first step
+    # stops the run unless the comment's first word is a trigger.
     if: >-
       github.event_name == 'issue_comment'
       && github.event.issue.pull_request
-      && contains(format('🎨 {0}', inputs.commands), github.event.comment.body)
+      && (
+        contains(format('🎨 {0}', inputs.commands), github.event.comment.body)
+        || contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
+      )
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -41,9 +46,12 @@ jobs:
             printf '%s' "${text%"${text##*[![:space:]]}"}"
           }
 
+          body="$(trim "$BODY")"
+          trigger="${body%%[[:space:]]*}"
+          args="$(trim "${body#"$trigger"}")"
           script=""
 
-          if [ "$BODY" = "🎨" ]; then
+          if [ "$trigger" = "🎨" ]; then
             script="format"
           fi
 
@@ -52,7 +60,7 @@ jobs:
               continue
             fi
 
-            if [ "$(trim "${line%%:*}")" = "$BODY" ]; then
+            if [ "$(trim "${line%%:*}")" = "$trigger" ]; then
               script="$(trim "${line#*:}")"
             fi
           done <<< "$COMMANDS"
@@ -64,6 +72,10 @@ jobs:
 
           {
             echo "found=true"
+            echo "trigger=$trigger"
+            echo "args<<PR_BOT_ARGS"
+            echo "$args"
+            echo "PR_BOT_ARGS"
             echo "script<<PR_BOT_SCRIPT"
             echo "$script"
             echo "PR_BOT_SCRIPT"
@@ -75,7 +87,7 @@ jobs:
         if: steps.resolve.outputs.found == 'true'
         uses: github/command@v2.0.3
         with:
-          command: ${{ github.event.comment.body }}
+          command: ${{ steps.resolve.outputs.trigger }}
           # Defaults to false, which ignores the command on draft pull requests.
           allow_drafts: true
           # Defaults to false, which waits for the pull request's checks to pass. A
@@ -107,7 +119,8 @@ jobs:
       - if: steps.command.outputs.continue == 'true'
         env:
           ACTOR: ${{ steps.command.outputs.actor }}
-          COMMAND: ${{ github.event.comment.body }}
+          ARGS: ${{ steps.resolve.outputs.args }}
+          COMMAND: ${{ steps.resolve.outputs.trigger }}
           GH_TOKEN: ${{ github.token }}
           PR: ${{ steps.command.outputs.issue_number }}
           SCRIPT: ${{ steps.resolve.outputs.script }}
@@ -152,11 +165,11 @@ jobs:
       - if: steps.command.outputs.continue == 'true'
         uses: stefanzweifel/git-auto-commit-action@v7
         with:
-          commit_message: Apply ${{ github.event.comment.body }} fixes
+          commit_message: Apply ${{ steps.resolve.outputs.trigger }} fixes
 
       - if: failure() && steps.command.outputs.continue == 'true'
         env:
-          COMMAND: ${{ github.event.comment.body }}
+          COMMAND: ${{ steps.resolve.outputs.trigger }}
           GH_TOKEN: ${{ github.token }}
           PR: ${{ steps.command.outputs.issue_number }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
