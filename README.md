@@ -49,11 +49,11 @@ jobs:
       commands: |
         🎨: format && npx eslint --fix .
         ♻️: composer install --no-interaction && vendor/bin/rector process
-        🚀: ./.github/bot/deploy.sh "$ARGS"
+        🚀: ./.github/bot/deploy.sh "$@"
 ```
 
 - A trigger is one word, such as an emoji or `/fix`. A comment runs it when its first word is the trigger, so both `🚀` and `🚀 staging` run 🚀.
-- Everything after the trigger reaches the script as `$ARGS`, or an empty string when there is nothing after it. A comment like `🎨 looks good` runs 🎨 too, with `looks good` as its arguments.
+- The words after the trigger are the command line's `$1`, `$2` and so on, and `"$@"` passes them on to a script, as the 🚀 line shows. The whole text after the trigger is also in `$ARGS`. A comment like `🎨 looks good` runs 🎨 too, with `looks` and `good` as its arguments.
 - The script runs in Bash from the root of the pull request's branch. It stops at the first failing command.
 - `format` is the built-in 🎨, so a line for 🎨 can extend it rather than replace it.
 - Anything longer than one line belongs in a script in your repo, like `./.github/bot/deploy.sh` above, which deploys to the environment named in the comment (`🚀 staging`).

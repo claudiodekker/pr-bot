@@ -178,7 +178,11 @@ jobs:
           }
 
           export -f format
-          bash -eo pipefail -c "$SCRIPT" 2>&1 | tee "$RUNNER_TEMP/output.log"
+
+          # The words after the trigger become $1, $2 and so on. read doesn't expand
+          # * or ? into file names, so a comment can't pull in the repo's files.
+          read -ra words <<< "$ARGS"
+          bash -eo pipefail -c "$SCRIPT" pr-bot "${words[@]}" 2>&1 | tee "$RUNNER_TEMP/output.log"
 
       # GITHUB_TOKEN may not push changes to workflow files, which Prettier formats.
       - if: steps.command.outputs.continue == 'true'
