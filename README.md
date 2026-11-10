@@ -26,6 +26,8 @@ jobs:
 
 Then comment exactly 🎨 on a pull request. pr-bot reacts with 👀, runs the formatters, pushes a commit named "Apply 🎨 fixes" when anything changed, and finishes with 👍 or 👎.
 
+pr-bot only replies when a command fails. The reply mentions you, links to the run and shows the command's output in a collapsible block, cut to the last 100 lines when it's longer.
+
 ## The built-in 🎨
 
 🎨 runs the formatters the repo uses:
@@ -96,9 +98,9 @@ For full deployments with environments and locks, [github/branch-deploy](https:/
 
 ## Who can run commands
 
-Only people with write or admin access to the repo can run commands. pr-bot ignores commands on pull requests from forks, because the workflow's token can't push to a fork, and running someone else's code with a token that can push isn't safe.
+Only people with write or admin access to the repo can run commands, and only on pull requests from the repo's own branches. pr-bot ignores everything else quietly, without a reaction or a reply. It refuses forks because the workflow's token can't push to a fork, and running someone else's code with a token that can push isn't safe.
 
-pr-bot uses [github/command](https://github.com/github/command) for these checks and for the reactions.
+pr-bot uses [github/command](https://github.com/github/command) for the reactions.
 
 A command with arguments only starts for commenters GitHub marks as an owner, member or collaborator of the repo. An organization member who keeps their membership private may show as neither, and then only commands without arguments work for them.
 

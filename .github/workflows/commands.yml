@@ -35,10 +35,16 @@ jobs:
       pull-requests: write
     concurrency: pr-commands-${{ github.event.issue.number }}-${{ github.event.comment.body }}
     steps:
+      # Matches the comment against the triggers, then checks that the commenter
+      # has write access and that the pull request isn't from a fork. Anything else
+      # ends the run here, without a reaction or a reply.
       - id: resolve
         env:
+          ACTOR: ${{ github.event.comment.user.login }}
           BODY: ${{ github.event.comment.body }}
           COMMANDS: ${{ inputs.commands }}
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.issue.number }}
         run: |
           trim() {
             local text="$1"
@@ -70,6 +76,22 @@ jobs:
             exit 0
           fi
 
+          permission="$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$ACTOR/permission" --jq .permission || echo none)"
+
+          if [ "$permission" != "admin" ] && [ "$permission" != "write" ]; then
+            echo "$ACTOR has $permission access, so the command doesn't run."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          fork="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq '.head.repo.full_name != .base.repo.full_name' || echo true)"
+
+          if [ "$fork" = "true" ]; then
+            echo "The pull request comes from a fork, so the command doesn't run."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           {
             echo "found=true"
             echo "trigger=$trigger"
@@ -81,8 +103,8 @@ jobs:
             echo "PR_BOT_SCRIPT"
           } >> "$GITHUB_OUTPUT"
 
-      # Reacts with 👀 when it spots the command, then 👍 or 👎 when the job ends.
-      # Only commenters with write or admin access get through.
+      # Reacts with 👀, then 👍 or 👎 when the job ends. Its own checks repeat the
+      # ones above, so the replies it posts when it refuses never appear.
       - id: command
         if: steps.resolve.outputs.found == 'true'
         uses: github/command@v2.0.3
@@ -169,15 +191,43 @@ jobs:
 
       - if: failure() && steps.command.outputs.continue == 'true'
         env:
+          ACTOR: ${{ steps.command.outputs.actor }}
+          ARGS: ${{ steps.resolve.outputs.args }}
           COMMAND: ${{ steps.resolve.outputs.trigger }}
           GH_TOKEN: ${{ github.token }}
           PR: ${{ steps.command.outputs.issue_number }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          {
-            echo "$COMMAND failed. [See the run]($RUN_URL)."
-            printf '\n<details>\n<summary>Output</summary>\n\n```\n'
-            tail -n 100 "$RUNNER_TEMP/output.log" 2>/dev/null || true
-            printf '```\n\n</details>\n'
-          } > "$RUNNER_TEMP/reply.md"
-          gh pr comment "$PR" --body-file "$RUNNER_TEMP/reply.md"
+          log="$RUNNER_TEMP/output.log"
+          reply="$RUNNER_TEMP/reply.md"
+          shown=100
+          comment="$(printf '%s %s' "$COMMAND" "$ARGS" | tr -d '`' | sed 's/ *$//')"
+
+          echo "@$ACTOR \`$comment\` failed. [See the run]($RUN_URL) for details." > "$reply"
+
+          if [ -s "$log" ]; then
+            total="$(wc -l < "$log" | tr -d ' ')"
+            summary="Output"
+            fence='```'
+
+            if [ "$total" -gt "$shown" ]; then
+              summary="Output, last $shown of $total lines"
+            fi
+
+            while grep -qF "$fence" "$log"; do
+              fence="$fence\`"
+            done
+
+            {
+              printf '\n<details>\n<summary>%s</summary>\n\n%s\n' "$summary" "$fence"
+              tail -n "$shown" "$log"
+
+              if [ -n "$(tail -c 1 "$log")" ]; then
+                echo
+              fi
+
+              printf '%s\n\n</details>\n' "$fence"
+            } >> "$reply"
+          fi
+
+          gh pr comment "$PR" --body-file "$reply"
