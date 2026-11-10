@@ -1,0 +1,170 @@
+name: PR commands
+
+on:
+  workflow_call:
+    inputs:
+      commands:
+        description: "One command per line, as `trigger: script`. A line for 🎨 replaces the built-in formatter."
+        type: string
+        default: ""
+      node-version:
+        description: "The Node.js version to install. Empty keeps the runner's own."
+        type: string
+        default: ""
+      php-version:
+        description: "The PHP version to install. Empty keeps the runner's own."
+        type: string
+        default: ""
+
+jobs:
+  run:
+    # GitHub evaluates this before starting a machine. Only a comment that appears
+    # in the command list gets one, and the first step matches it exactly.
+    if: >-
+      github.event_name == 'issue_comment'
+      && github.event.issue.pull_request
+      && contains(format('🎨 {0}', inputs.commands), github.event.comment.body)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency: pr-commands-${{ github.event.issue.number }}-${{ github.event.comment.body }}
+    steps:
+      - id: resolve
+        env:
+          BODY: ${{ github.event.comment.body }}
+          COMMANDS: ${{ inputs.commands }}
+        run: |
+          trim() {
+            local text="$1"
+            text="${text#"${text%%[![:space:]]*}"}"
+            printf '%s' "${text%"${text##*[![:space:]]}"}"
+          }
+
+          script=""
+
+          if [ "$BODY" = "🎨" ]; then
+            script="format"
+          fi
+
+          while IFS= read -r line; do
+            if [[ "$line" != *:* ]]; then
+              continue
+            fi
+
+            if [ "$(trim "${line%%:*}")" = "$BODY" ]; then
+              script="$(trim "${line#*:}")"
+            fi
+          done <<< "$COMMANDS"
+
+          if [ -z "$script" ]; then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          {
+            echo "found=true"
+            echo "script<<PR_BOT_SCRIPT"
+            echo "$script"
+            echo "PR_BOT_SCRIPT"
+          } >> "$GITHUB_OUTPUT"
+
+      # Reacts with 👀 when it spots the command, then 👍 or 👎 when the job ends.
+      # Only commenters with write or admin access get through.
+      - id: command
+        if: steps.resolve.outputs.found == 'true'
+        uses: github/command@v2.0.3
+        with:
+          command: ${{ github.event.comment.body }}
+          # Defaults to false, which ignores the command on draft pull requests.
+          allow_drafts: true
+          # Defaults to false, which waits for the pull request's checks to pass. A
+          # pull request whose style check fails then never qualifies for the fix.
+          skip_ci: true
+          # Defaults to false, which waits for approving reviews. Formatting needs none.
+          skip_reviews: true
+          # allow_forks stays false: GITHUB_TOKEN can't push to a fork, and running a
+          # stranger's code with a token that can push isn't safe.
+
+      - if: steps.command.outputs.continue == 'true'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.command.outputs.ref }}
+
+      - if: steps.command.outputs.continue == 'true' && inputs.php-version != ''
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ inputs.php-version }}
+          coverage: none
+
+      - if: steps.command.outputs.continue == 'true' && inputs.node-version != ''
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      # The script runs the pull request's code with a token that can push, so the
+      # built-in formatter installs with scripts off.
+      - if: steps.command.outputs.continue == 'true'
+        env:
+          ACTOR: ${{ steps.command.outputs.actor }}
+          COMMAND: ${{ github.event.comment.body }}
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ steps.command.outputs.issue_number }}
+          SCRIPT: ${{ steps.resolve.outputs.script }}
+        run: |
+          set -o pipefail
+
+          format() {
+            local ran=false
+
+            if [ -f composer.json ] && grep -q '"laravel/pint"' composer.json; then
+              composer install --no-scripts --no-interaction --prefer-dist
+              vendor/bin/pint
+              ran=true
+            fi
+
+            if [ -f package.json ] && grep -q '"prettier"' package.json; then
+              if [ -f pnpm-lock.yaml ]; then
+                corepack enable
+                pnpm install --frozen-lockfile --ignore-scripts
+                pnpm exec prettier --write .
+              else
+                npm ci --ignore-scripts
+                npx prettier --write .
+              fi
+
+              ran=true
+            fi
+
+            if [ "$ran" = false ]; then
+              echo "Found neither laravel/pint in composer.json nor prettier in package.json."
+              return 1
+            fi
+          }
+
+          export -f format
+          bash -eo pipefail -c "$SCRIPT" 2>&1 | tee "$RUNNER_TEMP/output.log"
+
+      # GITHUB_TOKEN may not push changes to workflow files, which Prettier formats.
+      - if: steps.command.outputs.continue == 'true'
+        run: git checkout -- .github/workflows 2>/dev/null || true
+
+      - if: steps.command.outputs.continue == 'true'
+        uses: stefanzweifel/git-auto-commit-action@v7
+        with:
+          commit_message: Apply ${{ github.event.comment.body }} fixes
+
+      - if: failure() && steps.command.outputs.continue == 'true'
+        env:
+          COMMAND: ${{ github.event.comment.body }}
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ steps.command.outputs.issue_number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          {
+            echo "$COMMAND failed. [See the run]($RUN_URL)."
+            printf '\n<details>\n<summary>Output</summary>\n\n```\n'
+            tail -n 100 "$RUNNER_TEMP/output.log" 2>/dev/null || true
+            printf '```\n\n</details>\n'
+          } > "$RUNNER_TEMP/reply.md"
+          gh pr comment "$PR" --body-file "$RUNNER_TEMP/reply.md"
